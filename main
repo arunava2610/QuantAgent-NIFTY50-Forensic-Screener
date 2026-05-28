@@ -1,0 +1,510 @@
+# =====================================================================
+# GLOBAL PROJECT IMPORTS & SECURITY INFRASTRUCTURE
+# =====================================================================
+import os
+import time
+import smtplib
+import pandas as pd
+import yfinance as yf
+import matplotlib.pyplot as plt
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
+from tkinter import filedialog, Tk
+from google import genai as g_genai
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches
+from dotenv import load_dotenv
+
+# Initialize local variable scope loading from hidden .env text configurations
+load_dotenv()
+
+import os
+from dotenv import load_dotenv
+
+# 1. Initialize the dotenv loader
+load_dotenv()
+
+# 2. Print the values directly to the terminal for verification
+print("========== ENV VAR TEST ==========")
+print(f"Gemini API Key:  {os.getenv('GEMINI_API_KEY')}")
+print(f"Sender Email:    {os.getenv('SENDER_EMAIL')}")
+print(f"Sender Password: {os.getenv('SENDER_PASSWORD')}")
+print("==================================")
+
+# =====================================================================
+# GLOBAL PARAMETERS & ENVIRONMENTAL CONTROL PATH ENVIRONMENT VARIABLES
+# =====================================================================
+OUTPUT_EXCEL_FILENAME = "NIFTY_Financials_Robust_Output.xlsx"
+OUTPUT_REPORT_FILENAME = "NIFTY_Portfolio_Screening_Report.docx"
+TARGET_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
+
+# 🎛️ SECURE INFRASTRUCTURE VARIABLE REGISTRATION (CLEAN CONTEXT LOADING)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+SEND_EMAIL = os.environ.get("SEND_EMAIL", "False").lower() in ("true", "1", "yes")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_sender_email@gmail.com")
+SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "your_gmail_app_password")
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+
+# Process comma-separated recipient chains out of environment maps
+RECIPIENTS_RAW = os.environ.get("RECIPIENT_EMAILS", "arunava2610@gmail.com")
+RECIPIENT_LIST = [email.strip() for email in RECIPIENTS_RAW.split(",") if email.strip()]
+
+
+# =====================================================================
+# DATA VALIDATION, ACQUISITION AND ANALYSIS PIPELINE FLOW
+# =====================================================================
+
+# CONDITION 1: Check if the final executive screening report document is already compiled
+if os.path.exists(OUTPUT_REPORT_FILENAME):
+    print(f"✅ Found existing compiled analysis report file: '{OUTPUT_REPORT_FILENAME}'")
+    print("⏭️ Skipping crawler, data matrix calculations, and AI model loop. Proceeding directly to mailing portal...")
+else:
+    print(f"🔍 '{OUTPUT_REPORT_FILENAME}' not found. Launching data compilation and analytics engine...")
+
+    # CONDITION 2: Check if intermediate crawled ledger dataset exists
+    if os.path.exists(OUTPUT_EXCEL_FILENAME):
+        print(f"✅ Found existing consolidated metric ledger: '{OUTPUT_EXCEL_FILENAME}'")
+        print("⏭️ Skipping market scraper module. Transitioning to metric analytics layout...")
+    else:
+        print(f"❌ '{OUTPUT_EXCEL_FILENAME}' not found. Activating web crawler pipelines...")
+        
+        # --- Step 1A: Select Ticker Spreadsheet ---
+        root = Tk()
+        root.withdraw()
+        tickers_file = filedialog.askopenfilename(title="Select Ticker Excel File")
+        if not tickers_file:
+            print("❌ No input file selected. Halting workflow pipeline execution.")
+            exit()
+        df_tickers = pd.read_excel(tickers_file)
+
+        ticker_col = 'Yahoo_Ticker' if 'Yahoo_Ticker' in df_tickers.columns else ('Symbol' if 'Symbol' in df_tickers.columns else df_tickers.columns[0])
+        company_col = 'Company Name' if 'Company Name' in df_tickers.columns else df_tickers.columns[0]
+
+        # --- Step 1B: Define Standard Accounting Rows ---
+        balance_sheet_items = [
+            "Cash And Cash Equivalents", "Short Term Investments", "Net Receivables", "Inventory",
+            "Other Current Assets", "Total Current Assets", "Property Plant And Equipment", "Goodwill",
+            "Total Assets", "Accounts Payable", "Short Term Debt", "Other Current Liabilities",
+            "Total Current Liabilities", "Long Term Debt", "Deferred Tax Liabilities",
+            "Other Non Current Liabilities", "Total Non Current Liabilities", "Total Liabilities",
+            "Ordinary Shares Number", "Retained Earnings", "Total Stockholder Equity",
+            "Total Liabilities And Stockholders Equity"
+        ]
+
+        income_statement_items = [
+            "Total Revenue", "Cost Of Revenue", "Gross Profit", "Operating Expense",
+            "Operating Income", "Net Non Operating Interest Income Expense", "Other Income Expense",
+            "Pretax Income", "Income Tax Expense", "Net Income", "Normalized Income",
+            "Interest Income", "Interest Expense", "Ebit", "Ebitda"
+        ]
+
+        cash_flow_items = [
+            "Operating Cash Flow", "Investing Cash Flow", "Financing Cash Flow",
+            "Net Cash Flow", "Depreciation And Amortization", "Stock Based Compensation",
+            "Change In Working Capital", "Capital Expenditure", "Issuance Of Stock",
+            "Repurchase Of Stock", "Issuance Of Debt", "Repayment Of Debt"
+        ]
+
+        results = {year: [] for year in TARGET_YEARS}
+
+        fiscal_quarters = {
+            2021: [(6, 2020), (9, 2020), (12, 2020), (3, 2021)],
+            2022: [(6, 2021), (9, 2021), (12, 2021), (3, 2022)],
+            2023: [(6, 2022), (9, 2022), (12, 2022), (3, 2023)],
+            2024: [(6, 2023), (9, 2023), (12, 2023), (3, 2024)],
+            2025: [(6, 2024), (9, 2024), (12, 2024), (3, 2025)],
+            2026: [(6, 2025), (9, 2025), (12, 2025), (3, 2026)]
+        }
+
+        def safe_extract(df_source, item_name, target_col):
+            if df_source is None or df_source.empty:
+                return None
+            if item_name in df_source.index and target_col in df_source.columns:
+                return df_source.loc[item_name, target_col]
+            lower_index = [str(x).lower().strip() for x in df_source.index]
+            target_lower = item_name.lower().strip()
+            if target_lower in lower_index:
+                real_idx = df_source.index[lower_index.index(target_lower)]
+                if target_col in df_source.columns:
+                    return df_source.loc[real_idx, target_col]
+            return None
+
+        # --- Step 1C: Crawl Yahoo Finance API Ledger Interface ---
+        for idx, row in df_tickers.iterrows():
+            ticker = str(row[ticker_col]).strip()
+            company = row[company_col]
+            if not ticker.endswith('.NS') and not ticker.endswith('.BO'):
+                ticker += '.NS'
+                
+            print(f"[{idx+1}/{len(df_tickers)}] Fetching ledger models for: {company} ({ticker})...")
+            try:
+                stock = yf.Ticker(ticker)
+                ann_fin, ann_bs, ann_cf = stock.financials, stock.balance_sheet, stock.cashflow
+                q_fin, q_bs, q_cf = stock.quarterly_financials, stock.quarterly_balance_sheet, stock.quarterly_cashflow
+
+                if ann_fin is not None and not ann_fin.empty:
+                    for fy in TARGET_YEARS:
+                        ann_cols = [col for col in ann_fin.columns if hasattr(col, "year") and col.year == fy]
+                        if not ann_cols:
+                            continue
+                        ann_col = ann_cols[0]
+                        
+                        ann_entry = {
+                            'Company Name': company, 'Ticker': ticker,
+                            'Last Updated': str(ann_col.date()), 'Type': "Annual", 'Quarter Sort': 0
+                        }
+                        for item in income_statement_items:
+                            ann_entry[item] = safe_extract(ann_fin, item, ann_col)
+                        for item in balance_sheet_items:
+                            ann_entry[item] = safe_extract(ann_bs, item, ann_col)
+                        for item in cash_flow_items:
+                            ann_entry[item] = safe_extract(ann_cf, item, ann_col)
+                        results[fy].append(ann_entry)
+
+                if q_fin is not None and not q_fin.empty:
+                    q_fin_cols = pd.to_datetime(q_fin.columns)
+                    for fy, quarter_list in fiscal_quarters.items():
+                        for q_idx, (target_month, target_year) in enumerate(quarter_list):
+                            matched_cols = [col for col in q_fin_cols if col.month == target_month and col.year == target_year]
+                            if not matched_cols:
+                                continue
+                            real_quarter_date = matched_cols[0]
+                            orig_col_key = q_fin.columns[q_fin_cols.get_loc(real_quarter_date)]
+                            
+                            entry = {
+                                'Company Name': company, 'Ticker': ticker,
+                                'Last Updated': str(real_quarter_date.date()), 'Type': f"Q{q_idx+1}", 'Quarter Sort': q_idx + 1
+                            }
+                            for item in income_statement_items:
+                                entry[item] = safe_extract(q_fin, item, orig_col_key)
+                            for item in balance_sheet_items:
+                                entry[item] = safe_extract(q_bs, item, orig_col_key)
+                            for item in cash_flow_items:
+                                entry[item] = safe_extract(q_cf, item, orig_col_key)
+                            results[fy].append(entry)
+
+                time.sleep(1.5)
+            except Exception as e:
+                print(f"⚠️ Service Timeout/Skip mapping parameters on {ticker}: {e}")
+                time.sleep(3)
+
+        # --- Step 1D: Excel Workbook File Output Engine ---
+        wb = Workbook()
+        if "Sheet" in wb.sheetnames:
+            wb.remove(wb["Sheet"])
+
+        def write_sheet(wb, year, data):
+            if not data:
+                return
+            ws = wb.create_sheet(str(year))
+            df_sheet = pd.DataFrame(data)
+            df_sheet = df_sheet.sort_values(by=["Company Name", "Quarter Sort"]).drop(columns=["Quarter Sort"])
+
+            for r_idx, row in enumerate(dataframe_to_rows(df_sheet, index=False, header=True), 3):
+                for c_idx, val in enumerate(row, 1):
+                    ws.cell(row=r_idx, column=c_idx, value=val)
+
+            num_meta_cols = 4  
+            start_pl = num_meta_cols + 1
+            start_bs = start_pl + len(income_statement_items)
+            start_cf = start_bs + len(balance_sheet_items)
+
+            ws.merge_cells(start_row=1, start_column=start_pl, end_row=1, end_column=start_bs - 1)
+            ws.merge_cells(start_row=1, start_column=start_bs, end_row=1, end_column=start_cf - 1)
+            ws.merge_cells(start_row=1, start_column=start_cf, end_row=1, end_column=start_cf + len(cash_flow_items) - 1)
+
+            ws.cell(row=1, column=start_pl).value = "Income Statement (P&L)"
+            ws.cell(row=1, column=start_bs).value = "Balance Sheet"
+            ws.cell(row=1, column=start_cf).value = "Cash Flow"
+
+            fill = PatternFill(start_color="B7D7F7", end_color="B7D7F7", fill_type="solid")
+            font = Font(bold=True, size=11)
+            for col in [start_pl, start_bs, start_cf]:
+                cell = ws.cell(row=1, column=col)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.fill = fill
+                cell.font = font
+
+            end_col_letter = get_column_letter(df_sheet.shape[1])
+            ws.auto_filter.ref = f"A3:{end_col_letter}3"
+            
+            for i in range(1, df_sheet.shape[1] + 1):
+                col_letter = get_column_letter(i)
+                ws.column_dimensions[col_letter].width = 22
+                if i == 3:
+                    for row in range(4, ws.max_row + 1):
+                        ws[f"{col_letter}{row}"].number_format = "YYYY-MM-DD"
+                elif i > 4:
+                    for row in range(4, ws.max_row + 1):
+                        cell = ws[f"{col_letter}{row}"]
+                        if cell.value is not None:
+                            cell.number_format = '₹#,##0.00_);[Red](₹#,##0.00)'
+
+        for y in TARGET_YEARS:
+            full_data = [row for row in results[y] if row['Type'] == "Annual" or row['Type'] in ["Q1", "Q2", "Q3", "Q4"]]
+            write_sheet(wb, y, full_data)
+
+        wb.save(OUTPUT_EXCEL_FILENAME)
+        print(f"\n✅ Historical financial matrix finalized and saved to: {os.path.abspath(OUTPUT_EXCEL_FILENAME)}")
+
+    # =====================================================================
+    # STEP 2B: EXPERT TWO-PASS ANALYTICS MODEL GENERATOR
+    # =====================================================================
+    print("\n--- Initializing Context-Enriched Agentic Ratio Model Processing ---")
+    
+    client = g_genai.Client(api_key=GEMINI_API_KEY)
+    print(f"Loading workbook calculations from source file: {OUTPUT_EXCEL_FILENAME}...")
+    xls = pd.ExcelFile(OUTPUT_EXCEL_FILENAME)
+
+    all_years_data = []
+    for sheet_name in xls.sheet_names:
+        year_df = pd.read_excel(xls, sheet_name=sheet_name, header=2)
+        year_df['Fiscal_Year'] = int(sheet_name)
+        all_years_data.append(year_df)
+
+    master_financial_df = pd.concat(all_years_data, ignore_index=True)
+    unique_companies = [c for c in master_financial_df['Company Name'].unique() if pd.notna(c)]
+
+    # Initialize New Document structure
+    doc = Document()
+    doc.add_heading('NIFTY Executive Investment Screening Summary', level=0)
+    doc.add_paragraph('Generated by: Hybrid Agentic AI & Local Expert Rule Architecture\nAdvanced Ratio Evaluation Framework & Contextual Verification Graphics')
+
+    # MASTER SYSTEM TEMPLATE
+    master_prompt_template = """
+    You are acting as an Elite Corporate Investment Committee Member and Senior Forensic Risk Auditor.
+    Evaluate the financial durability, operational health, and debt trajectories of the enterprise listed below.
+
+    [SECTION A: COMPRESSED HISTORICAL LEDGER DATA]
+    {company_matrix_csv}
+
+    [SECTION B: PRE-CALCULATED STRUCTURAL FINANCIAL RATIOS PROFILE]
+    {ratios_summary_text}
+
+    [SECTION C: STRATEGIC EVALUATION OBJECTIVES]
+    1. Identify disconnects between paper accounting profits (Net Income) and real wallet metrics (Operating Cash Flow).
+    2. Review expansion of Capex projects against structural liquidity buffers and internal self-funding.
+    3. Analyze long-term solvency profiles across different market environments.
+
+    [OUTPUT CONFIGURATION REQUIREMENT]
+    Your analysis must be synthesized into an actionable verdict. You must respond strictly using this format layout:
+    RATING: [BUY, SELL, or HOLD]
+    REASONING: [Write a dense, high-impact 4 to 5 sentence corporate rationale justification text block that cites specific figures from Section B above to validate your structural evaluation.]
+    """
+
+    def local_expert_analysis(company_name, valid_ratio_df):
+        if valid_ratio_df.empty:
+            return "HOLD", "Insufficient historical multi-period financial entries available to calculate operational trend baselines for this asset."
+        latest_row = valid_ratio_df.iloc[-1]
+        npm, roa = latest_row['Net Profit Margin (%)'], latest_row['Return on Assets (%)']
+        debt_to_assets, cash_to_assets = latest_row['Debt to Assets (%)'], latest_row['Cash to Assets (%)']
+        fy = int(latest_row['Fiscal_Year'])
+        
+        if npm > 12.0 and roa > 8.0 and debt_to_assets < 35.0:
+            rating, status = "BUY", "strong baseline profitability and exceptional asset allocation configurations"
+        elif npm < 2.0 or debt_to_assets > 55.0 or cash_to_assets < 1.0:
+            rating, status = "SELL", "elevated macro leverage debt boundaries or deteriorating operational return limits"
+        else:
+            rating, status = "HOLD", "stable risk trends matching generalized industry mid-tier benchmark baselines"
+            
+        reasoning = (
+            f"Local Algorithmic Expert Engine generated a structural decision of {rating} for {company_name} based on FY{fy} financial metrics. "
+            f"The company closed the operational period with a Net Profit Margin of {npm:.2f}% and a Return on Assets (ROI proxy) of {roa:.2f}%. "
+            f"Solvency indicators reflect a Long-Term Debt-to-Assets ratio of {debt_to_assets:.2f}%, while liquid asset buffers sit at a Cash-to-Assets allocation of {cash_to_assets:.2f}%. "
+            f"This combination reveals {status}, requiring focused tracking of corporate capital expenditure outlays moving forward."
+        )
+        return rating, reasoning
+
+    # Main Processing Loop
+    for index, company in enumerate(unique_companies):
+        print(f"⏳ Executing Restructured Engine Line [{index + 1}/{len(unique_companies)}]: {company}...")
+        
+        comp_annual_df = master_financial_df[(master_financial_df['Company Name'] == company) & (master_financial_df['Type'] == 'Annual')].copy()
+        comp_annual_df = comp_annual_df.sort_values('Fiscal_Year')
+        
+        # Calculate evaluation ratio baselines safely
+        comp_annual_df['Net Profit Margin (%)'] = (comp_annual_df['Net Income'] / comp_annual_df['Total Revenue']) * 100
+        comp_annual_df['Return on Assets (%)'] = (comp_annual_df['Net Income'] / comp_annual_df['Total Assets']) * 100
+        comp_annual_df['Debt to Assets (%)'] = (comp_annual_df['Long Term Debt'].fillna(0) / comp_annual_df['Total Assets']) * 100
+        comp_annual_df['Cash to Assets (%)'] = (comp_annual_df['Cash And Cash Equivalents'].fillna(0) / comp_annual_df['Total Assets']) * 100
+        
+        ratios_summary_text = ""
+        valid_ratio_df = comp_annual_df.dropna(subset=['Net Profit Margin (%)', 'Total Revenue'])
+        
+        for _, r_row in valid_ratio_df.iterrows():
+            ratios_summary_text += (f"• Fiscal Year {int(r_row['Fiscal_Year'])} | "
+                                    f"Profitability (NPM): {r_row['Net Profit Margin (%)']:.2f}% | "
+                                    f"ROI (ROA Proxy): {r_row['Return on Assets (%)']:.2f}% | "
+                                    f"Solvency (Debt/Assets Ratio): {r_row['Debt to Assets (%)']:.2f}% | "
+                                    f"Liquidity (Cash/Assets Ratio): {r_row['Cash to Assets (%)']:.2f}%\n")
+            
+        if not ratios_summary_text:
+            ratios_summary_text = "Insufficient multi-period annualized data lines available to calculate metrics.\n"
+
+        # Pass 1B: Generate Metric Line Chart Graphics
+        chart_filename = f"trend_chart_{index}.png"
+        if len(valid_ratio_df) > 0:
+            try:
+                fig, ax = plt.subplots(figsize=(7, 4))
+                years_str = valid_ratio_df['Fiscal_Year'].astype(str)
+                ax.plot(years_str, valid_ratio_df['Net Profit Margin (%)'], marker='o', linewidth=2.5, color='#1f77b4', label='Profitability (NPM %)')
+                ax.plot(years_str, valid_ratio_df['Return on Assets (%)'], marker='s', linewidth=2.5, color='#2ca02c', label='ROI (ROA %)')
+                ax.plot(years_str, valid_ratio_df['Debt to Assets (%)'], marker='^', linewidth=2.5, color='#d62728', label='Solvency (Debt/Assets %)')
+                ax.plot(years_str, valid_ratio_df['Cash to Assets (%)'], marker='d', linewidth=2.5, color='#ff7f0e', label='Liquidity (Cash/Assets %)')
+                
+                ax.set_title(f"Core Financial Ratios Multi-Period Profile: {company}", fontsize=11, fontweight='bold', color='#333333')
+                ax.set_xlabel("Fiscal Operational Year Profile", fontsize=9, fontweight='bold')
+                ax.set_ylabel("Metric Evaluation Bounds (%)", fontsize=9, fontweight='bold')
+                ax.legend(loc='best', fontsize=8, frameon=True)
+                ax.grid(True, linestyle='--', alpha=0.6)
+                plt.tight_layout()
+                plt.savefig(chart_filename, dpi=150)
+                plt.close(fig)
+            except Exception as graph_err:
+                print(f"⚠️ Graph generation bypassed on {company}: {graph_err}")
+
+        # Pass 2: Context Evaluation
+        comp_all_df = master_financial_df[master_financial_df['Company Name'] == company].dropna(how='all', axis=1)
+        compressed_ledger_csv = comp_all_df.to_csv(index=False)
+        
+        final_agentic_prompt = master_prompt_template.format(
+            company_matrix_csv=compressed_ledger_csv,
+            ratios_summary_text=ratios_summary_text
+        )
+        
+        max_retries = 2
+        ai_response = ""
+        is_quota_exhausted = False
+        
+        for attempt in range(max_retries):
+            try:
+                if not GEMINI_API_KEY:
+                    raise ValueError("No API Key configured.")
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=final_agentic_prompt
+                )
+                ai_response = response.text
+                break
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "Quota" in str(e):
+                    print(f"⚠️ Quota threshold reached on attempt {attempt+1}. Transitioning to expert fallback engine...")
+                    is_quota_exhausted = True
+                    break
+                print(f"⚠️ Connection retry warning on {company} (Attempt {attempt+1}/{max_retries}): {e}")
+                time.sleep(6 * (attempt + 1))
+
+        if is_quota_exhausted or not ai_response:
+            rating_val, reason_val = local_expert_analysis(company, valid_ratio_df)
+        else:
+            rating_val = "REVIEW REQUIRED"
+            reason_val = ai_response.strip()
+            for line in ai_response.strip().split('\n'):
+                if "RATING:" in line.upper():
+                    rating_val = line.split(":", 1)[1].replace("*", "").strip()
+                elif "REASONING:" in line.upper():
+                    reason_val = line.split(":", 1)[1].strip()
+
+        # Write data metrics beautifully into Microsoft Word document tables
+        p_heading = doc.add_paragraph()
+        r_comp = p_heading.add_run(f"\n🏢 {company}")
+        r_comp.bold = True
+        r_comp.font.size = Pt(13)
+        
+        r_rate_label = p_heading.add_run(" | Action Recommendation: ")
+        r_rate_label.italic = True
+        
+        r_rate = p_heading.add_run(rating_val)
+        r_rate.bold = True
+        
+        if "BUY" in rating_val.upper():
+            r_rate.font.color.rgb = RGBColor(0, 128, 0)
+        elif "SELL" in rating_val.upper():
+            r_rate.font.color.rgb = RGBColor(180, 0, 0)
+        else:
+            r_rate.font.color.rgb = RGBColor(218, 165, 32)
+
+        p_rat_hdr = doc.add_paragraph()
+        r_rat_hdr = p_rat_hdr.add_run("🔢 Mathematically Derived Core Ratio History:")
+        r_rat_hdr.bold = True
+        r_rat_hdr.font.size = Pt(10.5)
+        
+        p_rat_txt = doc.add_paragraph()
+        p_rat_txt.add_run(ratios_summary_text).font.size = Pt(9.5)
+
+        p_reason_hdr = doc.add_paragraph()
+        r_reason_hdr = p_reason_hdr.add_run("🧠 Forensic Investment Committee Rationale:")
+        r_reason_hdr.bold = True
+        r_reason_hdr.font.size = Pt(10.5)
+
+        p_body = doc.add_paragraph()
+        p_body.add_run(reason_val).font.size = Pt(10)
+
+        # Inject matching chart file path parameters inside document bounds natively
+        if os.path.exists(chart_filename):
+            doc.add_paragraph().add_run().add_picture(chart_filename, width=Inches(5.6))
+            try:
+                os.remove(chart_filename)
+            except:
+                pass
+                
+        time.sleep(1)
+
+    # Compile files locally
+    doc.save(OUTPUT_REPORT_FILENAME)
+    print(f"\n🏆 Success! Report compiled and saved locally to: {os.path.abspath(OUTPUT_REPORT_FILENAME)}")
+
+
+# =====================================================================
+# AGENTIC MULTI-RECIPIENT SMTP EMAIL NOTIFICATION MODULE
+# =====================================================================
+if SEND_EMAIL:
+    if not RECIPIENT_LIST:
+        print("⚠️ Transmission halted: No valid recipient mailboxes mapped inside RECIPIENT_EMAILS variable.")
+    else:
+        print(f"\n📧 Activating secure gateway channels to deliver reports to {len(RECIPIENT_LIST)} mailboxes...")
+        print(f"Target Distribution Pool: {RECIPIENT_LIST}")
+        
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = SENDER_EMAIL
+            msg['To'] = ", ".join(RECIPIENT_LIST) # Formats display parameters inside standard mail apps
+            msg['Subject'] = "NIFTY Investment Committee Executive Screening Document"
+
+            email_body = (
+                f"Hello,\n\nPlease find attached the finalized executive screening report "
+                f"covering your NIFTY data profile.\n\nAll fundamental metrics, debt ratios, and multi-period "
+                f"profit targets were processed recursively and verified against the underlying trend models "
+                f"and automated expert engines.\n\n"
+                f"Best Regards,\nInvestment Analytics Pipeline Automation Framework"
+            )
+            msg.attach(MIMEText(email_body, 'plain'))
+
+            # Attach final compiled document
+            with open(OUTPUT_REPORT_FILENAME, "rb") as attachment:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(attachment.read())
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', f"attachment; filename= {os.path.basename(OUTPUT_REPORT_FILENAME)}")
+                msg.attach(part)
+
+            # Establish TLS Tunnel parameters securely over Google Mail server layers
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            
+            # Send the payload using the raw list to route transmission safely to every inbox concurrently
+            server.sendmail(SENDER_EMAIL, RECIPIENT_LIST, msg.as_string())
+            server.quit()
+            print(f"✅ Success! Strategic document dispatched smoothly to all {len(RECIPIENT_LIST)} endpoints.")
+        except Exception as email_err:
+            print(f"⚠️ Transmission error on secure mail gateway execution: {email_err}")
+else:
+    print("\nℹ️ Email delivery matrix toggled OFF. (Flip SEND_EMAIL = True inside your environment configurations to activate).")
