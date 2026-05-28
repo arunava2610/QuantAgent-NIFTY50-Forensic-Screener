@@ -2,8 +2,6 @@
 .env
 
 # Ignore large generated data sheets and reports
-NIFTY_Financials_Robust_Output.xlsx
-NIFTY_Portfolio_Screening_Report.docx
 *.png
 
 # Ignore Python cache folders
