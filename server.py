@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 import smtplib
 import logging
@@ -258,44 +259,76 @@ def generate_report(request: ReportRequest):
     logger.info(f"--- RAW GEMINI RESPONSE ---\n{ai_response}\n---------------------------")
 
     # ---------------------------------------------------------
-    # PARSE AI RESPONSE
+    # HYBRID AI RESPONSE PARSING (Handles JSON & Plain Text)
     # ---------------------------------------------------------
     ai_results = {}
-    current_ticker = None
-    current_rating = "REVIEW REQUIRED"
-    current_reasoning = ""
-
-    for line in ai_response.split('\n'):
-        clean_line = line.strip().replace("*", "").replace("#", "")
-        upper_line = clean_line.upper()
+    
+    # 1. TRY JSON PARSING FIRST
+    try:
+        # Strip markdown formatting just in case Gemini wrapped it in ```json ... ```
+        cleaned_json_string = ai_response.strip()
+        if cleaned_json_string.startswith("```json"):
+            cleaned_json_string = cleaned_json_string[7:]
+        if cleaned_json_string.startswith("```"):
+            cleaned_json_string = cleaned_json_string[3:]
+        if cleaned_json_string.endswith("```"):
+            cleaned_json_string = cleaned_json_string[:-3]
+            
+        parsed_json = json.loads(cleaned_json_string.strip())
         
-        if upper_line.startswith("TICKER:"):
-            if current_ticker:
-                ai_results[current_ticker] = {"rating": current_rating, "reasoning": current_reasoning.strip()}
-            
-            raw_ticker = clean_line.split(":", 1)[1].strip().upper()
-            if not raw_ticker.endswith('.NS') and not raw_ticker.endswith('.BO'):
-                raw_ticker += '.NS'
+        # Extract from a list of dictionaries 
+        if isinstance(parsed_json, list):
+            for item in parsed_json:
+                raw_ticker = str(item.get("ticker", "")).strip().upper()
+                if not raw_ticker.endswith('.NS') and not raw_ticker.endswith('.BO'):
+                    raw_ticker += '.NS'
+                    
+                rating = str(item.get("rating", "REVIEW REQUIRED")).upper()
+                reasoning = str(item.get("reasoning", "")).strip()
                 
-            current_ticker = raw_ticker
-            current_reasoning = ""
-            current_rating = "REVIEW REQUIRED"
-            
-        elif upper_line.startswith("RATING:"):
-            current_rating = clean_line.split(":", 1)[1].strip()
-            
-        elif upper_line.startswith("REASONING:"):
-            current_reasoning = clean_line.split(":", 1)[1].strip() + " "
-            
-        elif upper_line == "===" or upper_line.startswith("---"):
-            pass
-        elif current_ticker and clean_line:
-            current_reasoning += clean_line + " "
+                if raw_ticker:
+                    ai_results[raw_ticker] = {"rating": rating, "reasoning": reasoning}
+                    
+        logger.info("✅ Successfully parsed Gemini response using JSON decoder.")
 
-    if current_ticker:
-        ai_results[current_ticker] = {"rating": current_rating, "reasoning": current_reasoning.strip()}
+    except json.JSONDecodeError:
+        # 2. FALLBACK TO PLAIN TEXT PARSING (If JSON fails)
+        logger.info("⚠️ Response is not valid JSON. Falling back to manual text parsing.")
+        current_ticker = None
+        current_rating = "REVIEW REQUIRED"
+        current_reasoning = ""
 
-    logger.info(f"Successfully parsed {len(ai_results)} companies from the AI response.")
+        for line in ai_response.split('\n'):
+            clean_line = line.strip().replace("*", "").replace("#", "")
+            upper_line = clean_line.upper()
+            
+            if upper_line.startswith("TICKER:"):
+                if current_ticker:
+                    ai_results[current_ticker] = {"rating": current_rating, "reasoning": current_reasoning.strip()}
+                
+                raw_ticker = clean_line.split(":", 1)[1].strip().upper()
+                if not raw_ticker.endswith('.NS') and not raw_ticker.endswith('.BO'):
+                    raw_ticker += '.NS'
+                    
+                current_ticker = raw_ticker
+                current_reasoning = ""
+                current_rating = "REVIEW REQUIRED"
+                
+            elif upper_line.startswith("RATING:"):
+                current_rating = clean_line.split(":", 1)[1].strip()
+                
+            elif upper_line.startswith("REASONING:"):
+                current_reasoning = clean_line.split(":", 1)[1].strip() + " "
+                
+            elif upper_line == "===" or upper_line.startswith("---"):
+                pass
+            elif current_ticker and clean_line:
+                current_reasoning += clean_line + " "
+
+        if current_ticker:
+            ai_results[current_ticker] = {"rating": current_rating, "reasoning": current_reasoning.strip()}
+
+    logger.info(f"Successfully compiled {len(ai_results)} companies into the final report dictionary.")
 
     # ---------------------------------------------------------
     # DOCUMENT & CHART GENERATION
