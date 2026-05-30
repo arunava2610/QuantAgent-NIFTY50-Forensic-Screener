@@ -48,9 +48,10 @@ class ReportRequest(BaseModel):
     custom_feedback: str
     email: str = "" 
 
-# ⚠️ INSERT YOUR GOOGLE DRIVE FILE IDs HERE
+# ✅ LIVE GOOGLE DRIVE FILE IDs INJECTED HERE
 EXCEL_DRIVE_ID = "1WQljak5wURGcg5izR_jPFfMwcqza97jx"
 API_KEY_DRIVE_ID = "1eaOBvwclf6xtIxfT3RnJdE3dwCKm1b_5"
+
 EXCEL_DRIVE_URL = f"https://drive.google.com/uc?export=download&id={EXCEL_DRIVE_ID}"
 API_KEY_DRIVE_URL = f"https://drive.google.com/uc?export=download&id={API_KEY_DRIVE_ID}"
 
@@ -140,7 +141,6 @@ def get_companies():
     try:
         logger.info("Fetching fresh companies list from Google Drive...")
         
-        # NEW DOWNLOAD LOGIC
         local_excel_path = download_excel_from_drive()
         if not local_excel_path:
             raise Exception("Could not download the Excel file.")
@@ -173,7 +173,6 @@ def generate_report(request: ReportRequest):
     if master_financial_df is None:
         logger.info("Downloading massive historical matrix from Drive...")
         
-        # NEW DOWNLOAD LOGIC
         local_excel_path = download_excel_from_drive()
         if not local_excel_path:
              return {"error": "Failed to download the financial matrix from Google Drive."}
@@ -246,7 +245,7 @@ def generate_report(request: ReportRequest):
             response = client.models.generate_content(model='gemini-2.5-flash', contents=compiled_prompt)
             ai_response = response.text
             logger.info("✅ Gemini API generation successful.")
-            break  # Exit loop on success
+            break 
         except Exception as e:
             logger.warning(f"⚠️ Gemini API failed on attempt {attempt}. Error: {str(e)}")
             if attempt < max_retries:
@@ -256,26 +255,38 @@ def generate_report(request: ReportRequest):
                 logger.error("❌ Max retries reached. Gemini API failed completely.")
                 ai_response = ""
 
-    # Parse AI response
+    logger.info(f"--- RAW GEMINI RESPONSE ---\n{ai_response}\n---------------------------")
+
+    # ---------------------------------------------------------
+    # PARSE AI RESPONSE
+    # ---------------------------------------------------------
     ai_results = {}
     current_ticker = None
     current_rating = "REVIEW REQUIRED"
     current_reasoning = ""
 
     for line in ai_response.split('\n'):
-        clean_line = line.strip()
+        clean_line = line.strip().replace("*", "").replace("#", "")
         upper_line = clean_line.upper()
         
         if upper_line.startswith("TICKER:"):
             if current_ticker:
                 ai_results[current_ticker] = {"rating": current_rating, "reasoning": current_reasoning.strip()}
-            current_ticker = clean_line.split(":", 1)[1].strip()
+            
+            raw_ticker = clean_line.split(":", 1)[1].strip().upper()
+            if not raw_ticker.endswith('.NS') and not raw_ticker.endswith('.BO'):
+                raw_ticker += '.NS'
+                
+            current_ticker = raw_ticker
             current_reasoning = ""
             current_rating = "REVIEW REQUIRED"
+            
         elif upper_line.startswith("RATING:"):
-            current_rating = clean_line.split(":", 1)[1].replace("*", "").strip()
+            current_rating = clean_line.split(":", 1)[1].strip()
+            
         elif upper_line.startswith("REASONING:"):
             current_reasoning = clean_line.split(":", 1)[1].strip() + " "
+            
         elif upper_line == "===" or upper_line.startswith("---"):
             pass
         elif current_ticker and clean_line:
@@ -284,7 +295,11 @@ def generate_report(request: ReportRequest):
     if current_ticker:
         ai_results[current_ticker] = {"rating": current_rating, "reasoning": current_reasoning.strip()}
 
-    # Document generation
+    logger.info(f"Successfully parsed {len(ai_results)} companies from the AI response.")
+
+    # ---------------------------------------------------------
+    # DOCUMENT & CHART GENERATION
+    # ---------------------------------------------------------
     logger.info("Compiling Word Document and generating charts...")
     doc = docx.Document()
     doc.add_heading('NIFTY Executive Investment Screening Summary', level=0)
@@ -347,7 +362,6 @@ def generate_report(request: ReportRequest):
             os.remove(output_path) 
             return {"message": f"Report successfully generated and dispatched to {request.email}"}
         except Exception as e:
-            # If email fails, we still want to inform the frontend
             return {"error": f"Report generated, but failed to send email: {e}"}
     else:
         logger.info("Streaming file back to frontend for local download.")
