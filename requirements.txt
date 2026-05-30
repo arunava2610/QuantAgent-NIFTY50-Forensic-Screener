@@ -2,3 +2,9 @@ fastapi
 uvicorn
 python-docx
 pydantic
+pandas
+openpyxl
+matplotlib
+google-genai
+requests
+python-dotenv
